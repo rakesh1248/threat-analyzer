@@ -121,7 +121,7 @@ For each threat above:
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,
-            max_tokens=900,
+            max_tokens=2500,
         )
 
         output = response.choices[0].message.content
