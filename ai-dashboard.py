@@ -91,44 +91,83 @@ def read_cloudwatch_logs(group, start, end):
         )
         events.extend([e["message"] for e in logs["events"]])
     return events
+import json
+
 def get_ai_suggestions(anomalies):
     if not anomalies:
         return ["✅ No anomalies to analyze."]
 
-    # Extract unique threat types
     unique_types = sorted({a[0] for a in anomalies})
     threat_list_text = ", ".join(unique_types)
 
-    prompt = f"""
-You are a cybersecurity analyst for AWS cloud environment.
+    user_prompt = f"""
+Return ONLY valid JSON. No explanation. Format exactly as an array of objects.
 
-Detected security threat categories:
+For each threat in this list:
 {threat_list_text}
 
-For each threat above:
-- Explain why it's dangerous
-- Provide AWS-specific remediations
-- Mention related AWS services (IAM, GuardDuty, WAF, CloudTrail, Security Hub, Shield, VPC, KMS etc.)
-- Provide MITRE ATT&CK technique mapping where relevant
-- Provide short SOC playbook response steps
-    """
+Return JSON in this format:
+
+[
+  {{
+    "threat": "<threat name>",
+    "danger": "<why it's dangerous>",
+    "aws_remediation": "<AWS specific remediation steps>",
+    "aws_services": ["IAM","CloudTrail","GuardDuty","Security Hub", ...],
+    "mitre_attack": "<MITRE technique ID and name>",
+    "soc_playbook_steps": "<short SOC response steps>"
+  }}
+]
+"""
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4.1-nano",
-            messages=[
-                {"role": "system", "content": "You are a senior cloud security architect."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=2500,
+        response = client.responses.create(
+            model="gpt-5-nano",
+            instructions="You are a senior AWS cloud security architect. Always respond in VALID JSON only.",
+            input=user_prompt,
+
+            max_output_tokens=6000,
+            reasoning={"effort": "low"},
+            store=False,
         )
 
-        output = response.choices[0].message.content
-        return output.splitlines()
+        # Extract output
+        output_text = ""
+
+        if hasattr(response, "output_text") and response.output_text:
+            output_text = response.output_text
+        elif response.output:
+            try:
+                output_text = response.output[0].content[0].text
+            except:
+                pass
+
+        if not output_text:
+            print("RAW RESPONSE:", response)
+            return ["❌ No output text generated."]
+
+        # Parse JSON
+        try:
+            data = json.loads(output_text)
+        except json.JSONDecodeError:
+            print("Invalid JSON received:\n", output_text)
+            return ["❌ Received invalid JSON."]
+
+        # Convert each threat object to nicely formatted lines
+        formatted_output = []
+        for item in data:
+            formatted_output.append(f"### 🔥 Threat: {item.get('threat', '')}")
+            formatted_output.append(f"**Why it's dangerous:**\n{item.get('danger','')}")
+            formatted_output.append(f"**AWS Remediation:**\n{item.get('aws_remediation','')}")
+            formatted_output.append(f"**Related AWS Services:** {', '.join(item.get('aws_services', []))}")
+            formatted_output.append(f"**MITRE ATT&CK:** {item.get('mitre_attack','')}")
+            formatted_output.append(f"**SOC Playbook Steps:**\n{item.get('soc_playbook_steps','')}")
+            formatted_output.append("---")
+
+        return formatted_output
 
     except Exception as e:
-        print(str(e))
+        print("🔥 ERROR:", str(e))
         return [f"❌ OpenAI API Error: {str(e)}"]
 
 def read_s3_logs(bucket, prefix):
